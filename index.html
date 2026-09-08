@@ -150,9 +150,13 @@
           <div class="form-group">
             <label for="client-id-input" class="form-label">Google OAuth Client ID</label>
             <input type="text" id="client-id-input" class="form-input" placeholder="e.g. 123456789-abc.apps.googleusercontent.com" spellcheck="false" autocomplete="off">
+          </div>
+
+          <div class="form-group">
+            <label for="client-secret-input" class="form-label">Google OAuth Client Secret</label>
+            <input type="password" id="client-secret-input" class="form-input" placeholder="e.g. GOCSPX-xxxxxxxxxxxxxxxx" spellcheck="false" autocomplete="off">
             <small class="form-hint">
-              Created in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>.
-              Add <code>http://localhost:3000</code> to <strong>Authorized JavaScript origins</strong>.
+              Required for permanent stay-logged-in access. Found in <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a> beside your Client ID.
             </small>
           </div>
 
@@ -192,7 +196,7 @@
           </div>
 
           <div class="setup-guide-box">
-            <h4>Quick Setup Steps:</h4>
+            <h4>Quick Setup Steps (Permanent Stay-Logged-In):</h4>
             <ol>
               <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>.</li>
               <li>Create a project &amp; enable <strong>Google Calendar API</strong>.</li>
@@ -202,9 +206,13 @@
                   <li>Under <strong>Scopes</strong>, add <code>.../auth/calendar.readonly</code>.</li>
                 </ul>
               </li>
-              <li>Create <strong>Credentials &rarr; OAuth client ID</strong> &rarr; <em>Web application</em>.</li>
-              <li>Set <em>Authorized JavaScript origins</em> to <code>http://localhost:3000</code>.</li>
-              <li>Save your Client ID here, then sign in and check the <em>"See and download events"</em> box.</li>
+              <li>Under <strong>Credentials &rarr; OAuth 2.0 Client ID</strong> (Web application):
+                <ul>
+                  <li><strong>Authorized JavaScript origins</strong>: <code>http://localhost:3000</code> (and your Render URL).</li>
+                  <li><strong>Authorized redirect URIs</strong>: <code>http://localhost:3000/oauth2callback</code> (and <code>https://YOUR_RENDER_URL/oauth2callback</code>).</li>
+                </ul>
+              </li>
+              <li>Paste your Client ID &amp; Secret above, save, then sign in.</li>
             </ol>
           </div>
         </div>

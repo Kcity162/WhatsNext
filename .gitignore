@@ -5,5 +5,8 @@
 __pycache__/
 *.pyc
 
-# Local config (optional override)
+# Local config & tokens
 config.js
+data/
+token_store.json
+*.token

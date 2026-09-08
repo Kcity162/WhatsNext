@@ -1,10 +1,9 @@
 services:
   - type: web
     name: whatsnext
-    runtime: static
+    runtime: python
     buildCommand: ""
-    staticPublishPath: .
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
+    startCommand: "python3 server.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0

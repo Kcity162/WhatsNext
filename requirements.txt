@@ -1,0 +1,2 @@
+# WhatsNext requires zero external dependencies
+# Uses Python standard library only

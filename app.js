@@ -1,10 +1,10 @@
 /**
  * app.js
  * Main application logic for WhatsNext:
- * - Google Identity Services (GIS) OAuth 2.0
- * - Google Calendar REST API v3 fetcher
+ * - Server-assisted Google OAuth 2.0 with permanent offline refresh_token (never logs out)
+ * - Client-side Google Identity Services fallback
  * - Conference link detection (Meet, Zoom, Teams, Webex)
- * - State management and countdown UI coordination
+ * - State management and adaptive countdown UI coordination
  * - Demo mode support
  */
 
@@ -13,11 +13,17 @@ import { CountdownTimer } from './countdown.js';
 class WhatsNextApp {
   constructor() {
     this.clientId = this.loadClientId();
-    this.accessToken = localStorage.getItem('whatsnext_access_token') || sessionStorage.getItem('whatsnext_access_token') || null;
-    this.tokenExpiresAt = parseInt(localStorage.getItem('whatsnext_token_expires_at') || sessionStorage.getItem('whatsnext_token_expires_at') || '0', 10);
-    this.userProfile = JSON.parse(localStorage.getItem('whatsnext_user_profile') || sessionStorage.getItem('whatsnext_user_profile') || 'null');
+    this.accessToken = localStorage.getItem('whatsnext_access_token') || null;
+    this.tokenExpiresAt = parseInt(localStorage.getItem('whatsnext_token_expires_at') || '0', 10);
+    this.userProfile = JSON.parse(localStorage.getItem('whatsnext_user_profile') || 'null');
     this.tokenRefreshTimeout = null;
     this.isRefreshingToken = false;
+
+    // Backend-assisted permanent auth state
+    this.isBackendSupported = false;
+    this.backendConfigured = false;
+    this.backendAuthenticated = false;
+    this.userEmail = localStorage.getItem('whatsnext_user_email') || '';
 
     this.isDemoMode = false;
     this.events = [];
@@ -35,7 +41,7 @@ class WhatsNextApp {
     this.dom = {};
     this.initDOMElements();
     this.initEventListeners();
-    this.initGoogleClient();
+    this.initApp();
   }
 
   loadClientId() {
@@ -48,7 +54,9 @@ class WhatsNextApp {
   saveClientId(clientId) {
     this.clientId = clientId.trim();
     localStorage.setItem('whatsnext_client_id', this.clientId);
-    this.initGoogleClient();
+    if (!this.isBackendSupported) {
+      this.initGoogleClient();
+    }
   }
 
   initDOMElements() {
@@ -86,6 +94,7 @@ class WhatsNextApp {
       settingsModal: document.getElementById('settings-modal'),
       closeSettingsBtn: document.getElementById('close-settings-btn'),
       clientIdInput: document.getElementById('client-id-input'),
+      clientSecretInput: document.getElementById('client-secret-input'),
       refreshIntervalSelect: document.getElementById('refresh-interval-select'),
       saveSettingsBtn: document.getElementById('save-settings-btn'),
       signoutBtn: document.getElementById('signout-btn'),
@@ -109,15 +118,13 @@ class WhatsNextApp {
   }
 
   initEventListeners() {
-    // Auth button click
-    this.dom.authBtn?.addEventListener('click', () => {
-      if (!this.clientId) {
-        this.openSettings();
-        this.showToast('Please configure your Google Client ID first');
-        return;
-      }
-      this.requestGoogleAccessToken();
-    });
+    // Auth button clicks (header and card)
+    this.dom.authBtn?.addEventListener('click', () => this.handleAuthClick());
+
+    const cardAuthBtn = this.dom.stateAuth?.querySelector('button');
+    if (cardAuthBtn) {
+      cardAuthBtn.addEventListener('click', () => this.handleAuthClick());
+    }
 
     // Refresh button
     this.dom.refreshBtn?.addEventListener('click', () => {
@@ -136,9 +143,28 @@ class WhatsNextApp {
       if (e.target === this.dom.settingsModal) this.closeSettings();
     });
 
-    this.dom.saveSettingsBtn?.addEventListener('click', () => {
+    this.dom.saveSettingsBtn?.addEventListener('click', async () => {
       const newClientId = this.dom.clientIdInput.value.trim();
+      const newClientSecret = this.dom.clientSecretInput ? this.dom.clientSecretInput.value.trim() : '';
+
       this.saveClientId(newClientId);
+
+      // Save to backend if supported
+      if (this.isBackendSupported && (newClientId || newClientSecret)) {
+        try {
+          const res = await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ clientId: newClientId, clientSecret: newClientSecret })
+          });
+          const data = await res.json();
+          if (data.ok) {
+            this.backendConfigured = true;
+          }
+        } catch (e) {
+          console.error('[WhatsNext] Failed to save config to server:', e);
+        }
+      }
 
       const mode = this.dom.modePreciseRadio.checked ? 'precise' : 'sensible';
       this.countdown.setMode(mode);
@@ -153,8 +179,9 @@ class WhatsNextApp {
 
       this.closeSettings();
       this.showToast('Settings saved');
+
       if (!this.isDemoMode && this.isAuthenticated()) {
-        this.refreshEvents();
+        this.refreshEvents(true);
       }
     });
 
@@ -171,12 +198,12 @@ class WhatsNextApp {
       }
     });
 
-    // Auto refresh on tab visibility / focus with silent token restoration
+    // Auto refresh on tab visibility / focus
     document.addEventListener('visibilitychange', () => {
       if (document.hidden || this.isDemoMode) return;
       if (this.isAuthenticated()) {
         this.refreshEvents(false);
-      } else if (this.hasSignedInBefore()) {
+      } else if (!this.isBackendSupported && this.hasSignedInBefore()) {
         this.refreshTokenSilently();
       }
     });
@@ -185,17 +212,93 @@ class WhatsNextApp {
       if (this.isDemoMode) return;
       if (this.isAuthenticated()) {
         this.refreshEvents(false);
-      } else if (this.hasSignedInBefore()) {
+      } else if (!this.isBackendSupported && this.hasSignedInBefore()) {
         this.refreshTokenSilently();
       }
     });
   }
 
-  /* ---------------- Google Identity Services (GIS) ---------------- */
+  /* ---------------- Initialization & Server Detection ---------------- */
+
+  async initApp() {
+    // Check URL query parameters (e.g. from OAuth redirect)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('auth') === 'success') {
+      this.showToast('Signed in! Stay-logged-in access is active.');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (urlParams.get('error')) {
+      this.showToast(`Authentication error: ${urlParams.get('error')}`);
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    // Probe if backend API is available
+    const hasBackend = await this.checkBackendStatus();
+
+    if (hasBackend) {
+      this.updateAuthUI();
+      if (this.backendAuthenticated) {
+        this.refreshEvents(true);
+        this.startAutoRefresh();
+      } else {
+        this.showState('auth');
+      }
+    } else {
+      // Static host fallback: initialize client-side Google Identity Services
+      this.initGoogleClient();
+    }
+  }
+
+  async checkBackendStatus() {
+    try {
+      const res = await fetch('/api/status', { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        this.isBackendSupported = true;
+        this.backendConfigured = !!data.configured;
+        this.backendAuthenticated = !!data.authenticated;
+
+        if (data.clientId && !this.clientId) {
+          this.clientId = data.clientId;
+          localStorage.setItem('whatsnext_client_id', data.clientId);
+        }
+        if (data.email) {
+          this.userEmail = data.email;
+          localStorage.setItem('whatsnext_user_email', data.email);
+        }
+        return true;
+      }
+    } catch (e) {
+      console.log('[WhatsNext] Backend not detected, running in client-only mode.');
+    }
+    this.isBackendSupported = false;
+    return false;
+  }
+
+  handleAuthClick() {
+    if (this.isBackendSupported) {
+      if (!this.backendConfigured) {
+        this.openSettings();
+        this.showToast('Please enter your Client ID & Secret in Settings.');
+        return;
+      }
+      // Redirect to server-side Google OAuth (generates offline refresh_token)
+      window.location.href = '/api/auth/login';
+      return;
+    }
+
+    // Client-side fallback
+    if (!this.clientId) {
+      this.openSettings();
+      this.showToast('Please configure your Google Client ID first');
+      return;
+    }
+    this.requestGoogleAccessToken();
+  }
+
+  /* ---------------- Google Identity Services (GIS Client Fallback) ---------------- */
 
   initGoogleClient() {
     if (!window.google || !window.google.accounts || !window.google.accounts.oauth2) {
-      // Retry in 200ms if GIS script hasn't loaded yet
       setTimeout(() => this.initGoogleClient(), 200);
       return;
     }
@@ -213,7 +316,6 @@ class WhatsNextApp {
       });
       this.updateAuthUI();
 
-      // Check if we already have an active valid token or returning user
       if (this.isAuthenticated()) {
         this.fetchUserProfile();
         this.refreshEvents();
@@ -221,7 +323,6 @@ class WhatsNextApp {
         const remainingSec = Math.floor((this.tokenExpiresAt - Date.now()) / 1000);
         this.scheduleTokenRefresh(remainingSec);
       } else if (this.hasSignedInBefore()) {
-        console.log('[WhatsNext] Returning user detected. Restoring session silently...');
         this.refreshTokenSilently();
       }
     } catch (err) {
@@ -240,12 +341,8 @@ class WhatsNextApp {
       this.tokenRefreshTimeout = null;
     }
 
-    // Refresh 5 minutes before expiry (or after 50 minutes for a standard 60-min token)
     const refreshInSeconds = Math.max(expiresInSeconds - 300, 60);
-    console.log(`[WhatsNext] Scheduling silent token refresh in ~${Math.round(refreshInSeconds / 60)} minutes`);
-
     this.tokenRefreshTimeout = setTimeout(() => {
-      console.log('[WhatsNext] Auto-refreshing access token silently...');
       this.refreshTokenSilently();
     }, refreshInSeconds * 1000);
   }
@@ -256,9 +353,7 @@ class WhatsNextApp {
 
     const email = this.userProfile?.email || localStorage.getItem('whatsnext_user_email') || '';
     const opts = { prompt: '' };
-    if (email) {
-      opts.hint = email;
-    }
+    if (email) opts.hint = email;
 
     try {
       this.tokenClient.requestAccessToken(opts);
@@ -276,7 +371,6 @@ class WhatsNextApp {
         return;
       }
     }
-    // Prompts user for consent so Google always shows permission checkboxes
     this.tokenClient.requestAccessToken({ prompt: forceConsent ? 'consent' : '' });
   }
 
@@ -294,7 +388,6 @@ class WhatsNextApp {
       return;
     }
 
-    // Verify calendar scope was granted
     const hasCalendarScope = window.google?.accounts?.oauth2?.hasGrantedAnyScope(
       response,
       'https://www.googleapis.com/auth/calendar.readonly',
@@ -324,20 +417,30 @@ class WhatsNextApp {
   }
 
   isAuthenticated() {
+    if (this.isBackendSupported) {
+      return this.backendAuthenticated;
+    }
     return !!this.accessToken && Date.now() < this.tokenExpiresAt - 60000;
   }
 
-  signOut(revoke = true) {
+  async signOut(revoke = true) {
+    if (this.isBackendSupported) {
+      try {
+        await fetch('/api/auth/logout', { method: 'POST' });
+      } catch (e) {}
+      this.backendAuthenticated = false;
+    }
+
     if (revoke && this.accessToken && window.google?.accounts?.oauth2) {
       try {
         google.accounts.oauth2.revoke(this.accessToken, () => {});
-      } catch (e) {
-        // ignore revoke error
-      }
+      } catch (e) {}
     }
+
     this.accessToken = null;
     this.tokenExpiresAt = 0;
     this.userProfile = null;
+    this.userEmail = '';
     this.events = [];
     this.currentEvent = null;
 
@@ -371,18 +474,36 @@ class WhatsNextApp {
         this.userProfile = await res.json();
         localStorage.setItem('whatsnext_user_profile', JSON.stringify(this.userProfile));
         if (this.userProfile.email) {
+          this.userEmail = this.userProfile.email;
           localStorage.setItem('whatsnext_user_email', this.userProfile.email);
         }
         this.updateAuthUI();
       }
-    } catch (e) {
-      // Non-critical
-    }
+    } catch (e) {}
   }
 
   /* ---------------- Google Calendar Events Fetching ---------------- */
 
   async fetchCalendarEvents() {
+    // 1. Backend-assisted fetch (permanent refresh token)
+    if (this.isBackendSupported) {
+      const response = await fetch('/api/events', { cache: 'no-store' });
+      if (response.status === 401) {
+        this.backendAuthenticated = false;
+        this.updateAuthUI();
+        return [];
+      }
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `Failed to fetch calendar (${response.status})`);
+      }
+      const data = await response.json();
+      this.backendAuthenticated = true;
+      this.updateAuthUI();
+      return this.processGoogleEvents(data.items || []);
+    }
+
+    // 2. Client-side fallback fetch
     if (!this.isAuthenticated()) {
       if (this.hasSignedInBefore()) {
         this.refreshTokenSilently();
@@ -390,7 +511,6 @@ class WhatsNextApp {
       return [];
     }
 
-    // Look back 15 minutes to include meetings currently in progress
     const timeMin = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
     url.searchParams.set('timeMin', timeMin);
@@ -403,8 +523,7 @@ class WhatsNextApp {
     });
 
     if (response.status === 401) {
-      // Token expired: attempt automatic silent refresh instead of logging out
-      console.warn('[WhatsNext] Access token expired (401). Performing automatic silent renewal...');
+      console.warn('[WhatsNext] Access token expired (401). Performing silent renewal...');
       this.accessToken = null;
       if (this.hasSignedInBefore()) {
         this.refreshTokenSilently();
@@ -416,10 +535,9 @@ class WhatsNextApp {
     }
 
     if (response.status === 403) {
-      // Missing scope or permissions
       const err = await response.json().catch(() => ({}));
       console.error('Google Calendar 403 Forbidden:', err);
-      this.signOut();
+      this.signOut(false);
       this.showToast('⚠️ Insufficient permissions. Please sign in again and check the Calendar permission box.');
       return [];
     }
@@ -440,7 +558,6 @@ class WhatsNextApp {
     for (const item of items) {
       if (item.status === 'cancelled') continue;
 
-      // Filter out events the user declined
       if (item.attendees) {
         const selfAttendee = item.attendees.find((a) => a.self);
         if (selfAttendee && selfAttendee.responseStatus === 'declined') {
@@ -448,7 +565,6 @@ class WhatsNextApp {
         }
       }
 
-      // Start / End parsing
       let start = null;
       let end = null;
       let isAllDay = false;
@@ -457,7 +573,6 @@ class WhatsNextApp {
         start = new Date(item.start.dateTime);
         end = item.end?.dateTime ? new Date(item.end.dateTime) : new Date(start.getTime() + 30 * 60 * 1000);
       } else if (item.start?.date) {
-        // All-day event
         isAllDay = true;
         start = new Date(`${item.start.date}T00:00:00`);
         end = item.end?.date ? new Date(`${item.end.date}T23:59:59`) : new Date(start.getTime() + 86400000);
@@ -465,10 +580,8 @@ class WhatsNextApp {
         continue;
       }
 
-      // Ignore events that already ended in the past
       if (end.getTime() <= now) continue;
 
-      // Detect Video Call / Meeting Links
       const meetingLink = this.extractMeetingLink(item);
 
       processed.push({
@@ -484,22 +597,18 @@ class WhatsNextApp {
       });
     }
 
-    // Sort by startTime
     processed.sort((a, b) => a.start.getTime() - b.start.getTime());
     return processed;
   }
 
   extractMeetingLink(item) {
-    // 1. Google Meet hangoutLink
     if (item.hangoutLink) return item.hangoutLink;
 
-    // 2. conferenceData entryPoints
     if (item.conferenceData?.entryPoints) {
       const videoEntry = item.conferenceData.entryPoints.find((ep) => ep.entryPointType === 'video');
       if (videoEntry?.uri) return videoEntry.uri;
     }
 
-    // 3. Zoom, Teams, Webex regex search in location & description
     const text = `${item.location || ''} ${item.description || ''}`;
     const urlMatches = text.match(/(https?:\/\/[^\s<>"']+)/gi);
     if (urlMatches) {
@@ -567,10 +676,7 @@ class WhatsNextApp {
       return;
     }
 
-    const now = Date.now();
-    // Prioritize meeting currently in progress or next upcoming
     this.currentEvent = this.events[0];
-
     this.countdown.setTarget(this.currentEvent.start, this.currentEvent.end);
     this.showState('hero');
     this.renderHeroDetails();
@@ -578,7 +684,6 @@ class WhatsNextApp {
   }
 
   handleEventExpired() {
-    // When an event ends, re-evalute or refresh
     setTimeout(() => {
       if (this.isDemoMode) {
         this.advanceDemoEvent();
@@ -634,7 +739,7 @@ class WhatsNextApp {
     if (authenticated) {
       this.dom.authBtn.classList.add('hidden');
       this.dom.userBadge.classList.remove('hidden');
-      this.dom.userEmail.textContent = this.userProfile?.email || 'Connected';
+      this.dom.userEmail.textContent = this.userEmail || this.userProfile?.email || 'Connected';
     } else {
       this.dom.authBtn.classList.remove('hidden');
       this.dom.userBadge.classList.add('hidden');
@@ -648,11 +753,9 @@ class WhatsNextApp {
     this.dom.countdownValue.textContent = state.primary;
     this.dom.countdownSub.textContent = state.secondary;
 
-    // Badge styling
     this.dom.countdownBadge.textContent = state.badge;
     this.dom.countdownBadge.className = `badge badge-${state.urgency}`;
 
-    // Apply urgency glow / pulse effect on card if urgent
     if (state.urgency === 'urgent') {
       this.dom.heroCard.classList.add('urgent-pulse');
     } else {
@@ -664,11 +767,8 @@ class WhatsNextApp {
     if (!this.currentEvent) return;
 
     this.dom.meetingTitle.textContent = this.currentEvent.summary;
+    this.dom.meetingTime.textContent = this.formatTimeRange(this.currentEvent.start, this.currentEvent.end, this.currentEvent.isAllDay);
 
-    const timeString = this.formatTimeRange(this.currentEvent.start, this.currentEvent.end, this.currentEvent.isAllDay);
-    this.dom.meetingTime.textContent = timeString;
-
-    // Meeting Location / Video Link
     if (this.currentEvent.link) {
       this.dom.joinBtn.classList.remove('hidden');
       this.dom.joinBtn.href = this.currentEvent.link;
@@ -698,7 +798,6 @@ class WhatsNextApp {
     if (!this.dom.agendaList) return;
     this.dom.agendaList.innerHTML = '';
 
-    // Show next 3 events excluding current
     const upcoming = this.events.slice(1, 4);
 
     if (upcoming.length === 0) {
@@ -710,7 +809,6 @@ class WhatsNextApp {
       const li = document.createElement('li');
       li.className = 'agenda-item';
 
-      const timeRange = this.formatTimeRange(evt.start, evt.end, evt.isAllDay);
       const isSoon = (evt.start.getTime() - Date.now()) < 3600000;
 
       li.innerHTML = `
@@ -783,7 +881,7 @@ class WhatsNextApp {
       {
         id: 'demo-1',
         summary: 'Product Design & Roadmap Sync',
-        start: new Date(now + 4 * 60 * 1000 + 30 * 1000), // 4m 30s away
+        start: new Date(now + 4 * 60 * 1000 + 30 * 1000),
         end: new Date(now + 35 * 60 * 1000),
         isAllDay: false,
         link: 'https://meet.google.com/abc-defg-hij',
@@ -792,7 +890,7 @@ class WhatsNextApp {
       {
         id: 'demo-2',
         summary: '1:1 Catchup with Engineering Lead',
-        start: new Date(now + 48 * 60 * 1000), // 48m away
+        start: new Date(now + 48 * 60 * 1000),
         end: new Date(now + 78 * 60 * 1000),
         isAllDay: false,
         link: 'https://meet.google.com/xyz-uvwx-rst',
@@ -801,7 +899,7 @@ class WhatsNextApp {
       {
         id: 'demo-3',
         summary: 'Q3 Architectural Review',
-        start: new Date(now + 3 * 3600 * 1000 + 15 * 60 * 1000), // 3h 15m away
+        start: new Date(now + 3 * 3600 * 1000 + 15 * 60 * 1000),
         end: new Date(now + 4 * 3600 * 1000),
         isAllDay: false,
         link: null,
@@ -810,7 +908,7 @@ class WhatsNextApp {
       {
         id: 'demo-4',
         summary: 'Executive All-Hands & AMA',
-        start: new Date(now + 26 * 3600 * 1000), // 1d 2h away
+        start: new Date(now + 26 * 3600 * 1000),
         end: new Date(now + 27 * 3600 * 1000),
         isAllDay: false,
         link: 'https://meet.google.com/all-hands-live',

@@ -60,14 +60,21 @@ Since this app accesses your personal Google Calendar, Google requires an **OAut
    - Go to **APIs & Services** &rarr; **Credentials** &rarr; **Create Credentials** &rarr; **OAuth client ID**.
    - Application type: **Web application**.
    - Name: `WhatsNext Web Client`.
-   - Under **Authorized JavaScript origins**, click **Add URI** and enter:
+   - Under **Authorized JavaScript origins**, add:
      ```
      http://localhost:3000
+     https://YOUR_RENDER_URL.onrender.com
      ```
-   - Click **Create** and copy your **Client ID** (looks like `xxxxxxxxx.apps.googleusercontent.com`).
+   - Under **Authorized redirect URIs**, add:
+     ```
+     http://localhost:3000/oauth2callback
+     https://YOUR_RENDER_URL.onrender.com/oauth2callback
+     ```
+   - Click **Create** and copy both your **Client ID** and **Client Secret**.
 6. Configure WhatsNext:
-   - **Option A (UI)**: Open [http://localhost:3000](http://localhost:3000), click the **Settings (⚙️)** icon in the top right, paste your Client ID, and click **Save Settings**.
-   - **Option B (File)**: Copy `config.example.js` to `config.js` and paste your Client ID into `GOOGLE_CLIENT_ID`.
+   - Open WhatsNext in your browser, click the **Settings (⚙️)** icon, and paste your **Client ID** and **Client Secret**.
+   - Click **Save Settings**, then click **Sign in with Google**.
+   - Google will issue an offline `refresh_token` so you **stay logged in permanently** (never logs out after 1 hour).
 
 ---
 
