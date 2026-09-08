@@ -13,9 +13,11 @@ import { CountdownTimer } from './countdown.js';
 class WhatsNextApp {
   constructor() {
     this.clientId = this.loadClientId();
-    this.accessToken = sessionStorage.getItem('whatsnext_access_token') || null;
-    this.tokenExpiresAt = parseInt(sessionStorage.getItem('whatsnext_token_expires_at') || '0', 10);
-    this.userProfile = JSON.parse(sessionStorage.getItem('whatsnext_user_profile') || 'null');
+    this.accessToken = localStorage.getItem('whatsnext_access_token') || sessionStorage.getItem('whatsnext_access_token') || null;
+    this.tokenExpiresAt = parseInt(localStorage.getItem('whatsnext_token_expires_at') || sessionStorage.getItem('whatsnext_token_expires_at') || '0', 10);
+    this.userProfile = JSON.parse(localStorage.getItem('whatsnext_user_profile') || sessionStorage.getItem('whatsnext_user_profile') || 'null');
+    this.tokenRefreshTimeout = null;
+    this.isRefreshingToken = false;
 
     this.isDemoMode = false;
     this.events = [];
@@ -169,16 +171,22 @@ class WhatsNextApp {
       }
     });
 
-    // Auto refresh on tab visibility / focus
+    // Auto refresh on tab visibility / focus with silent token restoration
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden && !this.isDemoMode && this.isAuthenticated()) {
+      if (document.hidden || this.isDemoMode) return;
+      if (this.isAuthenticated()) {
         this.refreshEvents(false);
+      } else if (this.hasSignedInBefore()) {
+        this.refreshTokenSilently();
       }
     });
 
     window.addEventListener('focus', () => {
-      if (!this.isDemoMode && this.isAuthenticated()) {
+      if (this.isDemoMode) return;
+      if (this.isAuthenticated()) {
         this.refreshEvents(false);
+      } else if (this.hasSignedInBefore()) {
+        this.refreshTokenSilently();
       }
     });
   }
@@ -205,15 +213,58 @@ class WhatsNextApp {
       });
       this.updateAuthUI();
 
-      // Check if we already have an active valid token
+      // Check if we already have an active valid token or returning user
       if (this.isAuthenticated()) {
         this.fetchUserProfile();
         this.refreshEvents();
         this.startAutoRefresh();
+        const remainingSec = Math.floor((this.tokenExpiresAt - Date.now()) / 1000);
+        this.scheduleTokenRefresh(remainingSec);
+      } else if (this.hasSignedInBefore()) {
+        console.log('[WhatsNext] Returning user detected. Restoring session silently...');
+        this.refreshTokenSilently();
       }
     } catch (err) {
       console.error('Failed to init Google Token Client:', err);
       this.showToast('Error initializing Google Auth. Check Client ID.');
+    }
+  }
+
+  hasSignedInBefore() {
+    return localStorage.getItem('whatsnext_has_signed_in') === 'true';
+  }
+
+  scheduleTokenRefresh(expiresInSeconds) {
+    if (this.tokenRefreshTimeout) {
+      clearTimeout(this.tokenRefreshTimeout);
+      this.tokenRefreshTimeout = null;
+    }
+
+    // Refresh 5 minutes before expiry (or after 50 minutes for a standard 60-min token)
+    const refreshInSeconds = Math.max(expiresInSeconds - 300, 60);
+    console.log(`[WhatsNext] Scheduling silent token refresh in ~${Math.round(refreshInSeconds / 60)} minutes`);
+
+    this.tokenRefreshTimeout = setTimeout(() => {
+      console.log('[WhatsNext] Auto-refreshing access token silently...');
+      this.refreshTokenSilently();
+    }, refreshInSeconds * 1000);
+  }
+
+  refreshTokenSilently() {
+    if (!this.tokenClient || !this.clientId || this.isRefreshingToken) return;
+    this.isRefreshingToken = true;
+
+    const email = this.userProfile?.email || localStorage.getItem('whatsnext_user_email') || '';
+    const opts = { prompt: '' };
+    if (email) {
+      opts.hint = email;
+    }
+
+    try {
+      this.tokenClient.requestAccessToken(opts);
+    } catch (err) {
+      console.error('[WhatsNext] Silent token refresh failed:', err);
+      this.isRefreshingToken = false;
     }
   }
 
@@ -230,9 +281,16 @@ class WhatsNextApp {
   }
 
   handleTokenResponse(response) {
+    this.isRefreshingToken = false;
+
     if (response.error) {
-      console.error('OAuth Token error:', response);
-      this.showToast(`Sign in error: ${response.error}`);
+      console.warn('[WhatsNext] OAuth Token response error:', response);
+      if (response.error === 'user_logged_out' || response.error === 'consent_required' || response.error === 'interaction_required') {
+        this.signOut(false);
+        this.showToast('Google session expired. Please sign in again.');
+      } else {
+        this.showToast(`Sign in notice: ${response.error}`);
+      }
       return;
     }
 
@@ -244,32 +302,33 @@ class WhatsNextApp {
     ) || (response.scope && response.scope.includes('calendar'));
 
     if (!hasCalendarScope) {
-      console.warn('User did not grant calendar permission. Scope was:', response.scope);
+      console.warn('[WhatsNext] User did not grant calendar permission. Scope was:', response.scope);
       this.showToast('⚠️ Calendar permission missing. Please check the Calendar box on Google sign-in.');
-      this.signOut();
+      this.signOut(false);
       return;
     }
 
     this.accessToken = response.access_token;
-    const expiresIn = parseInt(response.expires_in, 10) || 3500;
+    const expiresIn = parseInt(response.expires_in, 10) || 3599;
     this.tokenExpiresAt = Date.now() + expiresIn * 1000;
 
-    sessionStorage.setItem('whatsnext_access_token', this.accessToken);
-    sessionStorage.setItem('whatsnext_token_expires_at', String(this.tokenExpiresAt));
+    localStorage.setItem('whatsnext_access_token', this.accessToken);
+    localStorage.setItem('whatsnext_token_expires_at', String(this.tokenExpiresAt));
+    localStorage.setItem('whatsnext_has_signed_in', 'true');
 
-    this.showToast('Signed in successfully');
     this.updateAuthUI();
     this.fetchUserProfile();
-    this.refreshEvents(true);
+    this.refreshEvents(false);
     this.startAutoRefresh();
+    this.scheduleTokenRefresh(expiresIn);
   }
 
   isAuthenticated() {
     return !!this.accessToken && Date.now() < this.tokenExpiresAt - 60000;
   }
 
-  signOut() {
-    if (this.accessToken && window.google?.accounts?.oauth2) {
+  signOut(revoke = true) {
+    if (revoke && this.accessToken && window.google?.accounts?.oauth2) {
       try {
         google.accounts.oauth2.revoke(this.accessToken, () => {});
       } catch (e) {
@@ -282,14 +341,24 @@ class WhatsNextApp {
     this.events = [];
     this.currentEvent = null;
 
-    sessionStorage.removeItem('whatsnext_access_token');
-    sessionStorage.removeItem('whatsnext_token_expires_at');
-    sessionStorage.removeItem('whatsnext_user_profile');
+    if (this.tokenRefreshTimeout) {
+      clearTimeout(this.tokenRefreshTimeout);
+      this.tokenRefreshTimeout = null;
+    }
+
+    localStorage.removeItem('whatsnext_access_token');
+    localStorage.removeItem('whatsnext_token_expires_at');
+    localStorage.removeItem('whatsnext_user_profile');
+    localStorage.removeItem('whatsnext_has_signed_in');
+    localStorage.removeItem('whatsnext_user_email');
+    sessionStorage.clear();
 
     this.countdown.setTarget(null);
     this.stopAutoRefresh();
     this.updateAuthUI();
-    this.showToast('Signed out');
+    if (revoke) {
+      this.showToast('Signed out');
+    }
   }
 
   async fetchUserProfile() {
@@ -300,7 +369,10 @@ class WhatsNextApp {
       });
       if (res.ok) {
         this.userProfile = await res.json();
-        sessionStorage.setItem('whatsnext_user_profile', JSON.stringify(this.userProfile));
+        localStorage.setItem('whatsnext_user_profile', JSON.stringify(this.userProfile));
+        if (this.userProfile.email) {
+          localStorage.setItem('whatsnext_user_email', this.userProfile.email);
+        }
         this.updateAuthUI();
       }
     } catch (e) {
@@ -312,9 +384,8 @@ class WhatsNextApp {
 
   async fetchCalendarEvents() {
     if (!this.isAuthenticated()) {
-      if (this.tokenClient && this.clientId) {
-        // Silent token refresh attempt
-        this.tokenClient.requestAccessToken({ prompt: 'none' });
+      if (this.hasSignedInBefore()) {
+        this.refreshTokenSilently();
       }
       return [];
     }
@@ -332,10 +403,15 @@ class WhatsNextApp {
     });
 
     if (response.status === 401) {
-      // Token expired
+      // Token expired: attempt automatic silent refresh instead of logging out
+      console.warn('[WhatsNext] Access token expired (401). Performing automatic silent renewal...');
       this.accessToken = null;
-      this.updateAuthUI();
-      this.showToast('Session expired. Please sign in again.');
+      if (this.hasSignedInBefore()) {
+        this.refreshTokenSilently();
+      } else {
+        this.updateAuthUI();
+        this.showToast('Session expired. Please sign in again.');
+      }
       return [];
     }
 
