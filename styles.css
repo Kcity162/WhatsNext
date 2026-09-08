@@ -628,6 +628,12 @@ body {
   border-color: var(--border-focus);
 }
 
+.form-select {
+  cursor: pointer;
+  appearance: auto;
+  font-family: var(--font-sans);
+}
+
 .form-hint {
   font-size: 0.72rem;
   color: var(--text-dim);

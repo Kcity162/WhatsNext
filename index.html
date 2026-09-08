@@ -176,6 +176,17 @@
             </div>
           </div>
 
+          <div class="form-group">
+            <label for="refresh-interval-select" class="form-label">Background Calendar Sync</label>
+            <select id="refresh-interval-select" class="form-input form-select">
+              <option value="30000">Every 30 seconds (Fastest)</option>
+              <option value="60000" selected>Every 1 minute (Recommended)</option>
+              <option value="120000">Every 2 minutes</option>
+              <option value="300000">Every 5 minutes</option>
+            </select>
+            <small class="form-hint">How often the app checks Google Calendar for changes while the tab is open.</small>
+          </div>
+
           <div id="signout-section" class="form-group">
             <button id="signout-btn" class="btn-danger hidden">Disconnect & Sign Out</button>
           </div>

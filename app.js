@@ -21,6 +21,7 @@ class WhatsNextApp {
     this.events = [];
     this.currentEvent = null;
     this.refreshInterval = null;
+    this.refreshIntervalMs = parseInt(localStorage.getItem('whatsnext_refresh_interval') || '60000', 10);
     this.tokenClient = null;
 
     this.countdown = new CountdownTimer({
@@ -83,6 +84,7 @@ class WhatsNextApp {
       settingsModal: document.getElementById('settings-modal'),
       closeSettingsBtn: document.getElementById('close-settings-btn'),
       clientIdInput: document.getElementById('client-id-input'),
+      refreshIntervalSelect: document.getElementById('refresh-interval-select'),
       saveSettingsBtn: document.getElementById('save-settings-btn'),
       signoutBtn: document.getElementById('signout-btn'),
       modeSensibleRadio: document.getElementById('mode-sensible'),
@@ -97,6 +99,10 @@ class WhatsNextApp {
       if (this.dom.modePreciseRadio) this.dom.modePreciseRadio.checked = true;
     } else {
       if (this.dom.modeSensibleRadio) this.dom.modeSensibleRadio.checked = true;
+    }
+
+    if (this.dom.refreshIntervalSelect) {
+      this.dom.refreshIntervalSelect.value = String(this.refreshIntervalMs);
     }
   }
 
@@ -135,6 +141,13 @@ class WhatsNextApp {
       const mode = this.dom.modePreciseRadio.checked ? 'precise' : 'sensible';
       this.countdown.setMode(mode);
       localStorage.setItem('whatsnext_time_mode', mode);
+
+      if (this.dom.refreshIntervalSelect) {
+        const newInterval = parseInt(this.dom.refreshIntervalSelect.value, 10) || 60000;
+        this.refreshIntervalMs = newInterval;
+        localStorage.setItem('whatsnext_refresh_interval', String(newInterval));
+        this.startAutoRefresh();
+      }
 
       this.closeSettings();
       this.showToast('Settings saved');
@@ -457,10 +470,9 @@ class WhatsNextApp {
 
   startAutoRefresh() {
     this.stopAutoRefresh();
-    // Poll every 3 minutes
     this.refreshInterval = setInterval(() => {
       this.refreshEvents(false);
-    }, 3 * 60 * 1000);
+    }, this.refreshIntervalMs);
   }
 
   stopAutoRefresh() {
@@ -743,6 +755,9 @@ class WhatsNextApp {
 
   openSettings() {
     this.dom.clientIdInput.value = this.clientId || '';
+    if (this.dom.refreshIntervalSelect) {
+      this.dom.refreshIntervalSelect.value = String(this.refreshIntervalMs);
+    }
     if (this.isAuthenticated()) {
       this.dom.signoutBtn.classList.remove('hidden');
     } else {
