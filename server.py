@@ -384,10 +384,13 @@ class WhatsNextHandler(http.server.SimpleHTTPRequestHandler):
 
         self.send_json(404, {"error": "Not Found"})
 
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
 def run():
-    socketserver.TCPServer.allow_reuse_address = True
     try:
-        with socketserver.TCPServer(("", PORT), WhatsNextHandler) as httpd:
+        with ThreadedTCPServer(("", PORT), WhatsNextHandler) as httpd:
             print("=" * 60, flush=True)
             print(f"🚀 WhatsNext Server running at:", flush=True)
             print(f"   👉 http://localhost:{PORT}", flush=True)
