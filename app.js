@@ -9,6 +9,7 @@
  */
 
 import { CountdownTimer } from './countdown.js';
+import { ChimePlayer } from './audio.js';
 
 // Auto-advance to next meeting 10 minutes after meeting starts
 const EVENT_STARTED_GRACE_MS = 10 * 60 * 1000; // 10 minutes
@@ -35,11 +36,23 @@ class WhatsNextApp {
     this.refreshIntervalMs = parseInt(localStorage.getItem('whatsnext_refresh_interval') || '60000', 10);
     this.tokenClient = null;
 
+    this.chimePlayer = new ChimePlayer();
+
     this.countdown = new CountdownTimer({
       mode: localStorage.getItem('whatsnext_time_mode') || 'sensible',
       startedGraceMs: EVENT_STARTED_GRACE_MS,
       onTick: (state) => this.renderCountdown(state),
-      onExpire: () => this.handleEventExpired()
+      onExpire: () => this.handleEventExpired(),
+      onWarning5m: () => {
+        this.chimePlayer.playWarning5m();
+        const title = this.currentEvent?.summary || 'Upcoming meeting';
+        this.showToast(`🔔 5m reminder: ${title}`);
+      },
+      onStart: () => {
+        this.chimePlayer.playEventStart();
+        const title = this.currentEvent?.summary || 'Meeting';
+        this.showToast(`🔔 Starting now: ${title}`);
+      }
     });
 
     this.dom = {};
@@ -104,6 +117,9 @@ class WhatsNextApp {
       signoutBtn: document.getElementById('signout-btn'),
       modeSensibleRadio: document.getElementById('mode-sensible'),
       modePreciseRadio: document.getElementById('mode-precise'),
+      soundToggle: document.getElementById('sound-toggle'),
+      testChime5mBtn: document.getElementById('test-chime-5m-btn'),
+      testChimeStartBtn: document.getElementById('test-chime-start-btn'),
       
       // Notification
       toast: document.getElementById('toast')
@@ -174,6 +190,10 @@ class WhatsNextApp {
       this.countdown.setMode(mode);
       localStorage.setItem('whatsnext_time_mode', mode);
 
+      if (this.dom.soundToggle) {
+        this.chimePlayer.setEnabled(this.dom.soundToggle.checked);
+      }
+
       if (this.dom.refreshIntervalSelect) {
         const newInterval = parseInt(this.dom.refreshIntervalSelect.value, 10) || 60000;
         this.refreshIntervalMs = newInterval;
@@ -187,6 +207,30 @@ class WhatsNextApp {
       if (!this.isDemoMode && this.isAuthenticated()) {
         this.refreshEvents(true);
       }
+    });
+
+    // Resume/unlock AudioContext on first user interaction
+    const unlockAudio = () => {
+      this.chimePlayer.initContext();
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+    document.addEventListener('click', unlockAudio, { passive: true });
+    document.addEventListener('keydown', unlockAudio, { passive: true });
+    document.addEventListener('touchstart', unlockAudio, { passive: true });
+
+    // Preview test chime buttons
+    this.dom.testChime5mBtn?.addEventListener('click', () => {
+      this.chimePlayer.initContext();
+      this.chimePlayer.playWarning5m();
+      this.showToast('🎵 5-minute warning chime preview');
+    });
+
+    this.dom.testChimeStartBtn?.addEventListener('click', () => {
+      this.chimePlayer.initContext();
+      this.chimePlayer.playEventStart();
+      this.showToast('🔔 Event start bell preview');
     });
 
     // Sign out
@@ -962,6 +1006,9 @@ class WhatsNextApp {
     }
     if (this.dom.refreshIntervalSelect) {
       this.dom.refreshIntervalSelect.value = String(this.refreshIntervalMs);
+    }
+    if (this.dom.soundToggle) {
+      this.dom.soundToggle.checked = this.chimePlayer.enabled;
     }
     if (this.isAuthenticated()) {
       this.dom.signoutBtn.classList.remove('hidden');

@@ -75,8 +75,241 @@ tests.forEach(t => {
   }
 });
 
+// Chime Trigger Simulation Tests
+console.log('\n--- Testing Chime Trigger Behavior ---');
+
+class MockTimer {
+  constructor(options = {}) {
+    this.targetDate = null;
+    this.endDate = null;
+    this.startedGraceMs = 10 * 60 * 1000;
+    this.onWarning5m = options.onWarning5m || (() => {});
+    this.onStart = options.onStart || (() => {});
+    this.onExpire = options.onExpire || (() => {});
+    this.expiredTriggered = false;
+    this.warning5mTriggered = false;
+    this.startTriggered = false;
+    this.mockNow = 1000000000;
+  }
+
+  setMockTime(t) {
+    this.mockNow = t;
+  }
+
+  setTarget(targetStartTime, targetEndTime = null) {
+    const newTargetDate = targetStartTime ? new Date(targetStartTime) : null;
+    const newEndDate = targetEndTime ? new Date(targetEndTime) : null;
+
+    const isSameTarget = (
+      (!this.targetDate && !newTargetDate) ||
+      (this.targetDate && newTargetDate && this.targetDate.getTime() === newTargetDate.getTime())
+    ) && (
+      (!this.endDate && !newEndDate) ||
+      (this.endDate && newEndDate && this.endDate.getTime() === newEndDate.getTime())
+    );
+
+    if (isSameTarget) {
+      return;
+    }
+
+    this.targetDate = newTargetDate;
+    this.endDate = newEndDate;
+    this.expiredTriggered = false;
+
+    if (this.targetDate) {
+      const initialDiffMs = this.targetDate.getTime() - this.mockNow;
+      if (initialDiffMs <= 0) {
+        this.warning5mTriggered = true;
+        this.startTriggered = true;
+      } else if (initialDiffMs < 60000) {
+        this.warning5mTriggered = true;
+        this.startTriggered = false;
+      } else {
+        this.warning5mTriggered = false;
+        this.startTriggered = false;
+      }
+    } else {
+      this.warning5mTriggered = false;
+      this.startTriggered = false;
+    }
+
+    this.tick();
+  }
+
+  tick() {
+    if (!this.targetDate) return;
+    const now = this.mockNow;
+    const diffMs = this.targetDate.getTime() - now;
+    const endDiffMs = this.endDate ? this.endDate.getTime() - now : null;
+    const startedMs = -diffMs;
+
+    const isGraceExpired = diffMs <= 0 && startedMs >= this.startedGraceMs;
+    const isEnded = diffMs <= 0 && (!endDiffMs || endDiffMs <= 0);
+
+    if (isGraceExpired || isEnded) {
+      if (!this.expiredTriggered) {
+        this.expiredTriggered = true;
+        this.onExpire();
+      }
+      return;
+    }
+
+    if (diffMs <= 300000 && diffMs > 0 && !this.warning5mTriggered) {
+      this.warning5mTriggered = true;
+      this.onWarning5m();
+    }
+
+    if (diffMs <= 0 && !this.startTriggered) {
+      this.startTriggered = true;
+      this.onStart();
+    }
+  }
+}
+
+// Test 1: Full lifecycle (10m -> 5m chime -> 0m chime -> auto-advance)
+{
+  let warningCount = 0;
+  let startCount = 0;
+  let expireCount = 0;
+  const baseTime = 1000000000;
+  const targetStart = baseTime + 10 * 60 * 1000; // 10 mins away
+  const targetEnd = targetStart + 30 * 60 * 1000; // 30 min duration
+
+  const timer = new MockTimer({
+    onWarning5m: () => warningCount++,
+    onStart: () => startCount++,
+    onExpire: () => expireCount++
+  });
+
+  timer.setMockTime(baseTime);
+  timer.setTarget(targetStart, targetEnd);
+
+  // At 10m away
+  if (warningCount === 0 && startCount === 0) {
+    console.log('✅ PASS: At 10m away, no chimes fired');
+  } else {
+    console.log('❌ FAIL: Chimes fired prematurely at 10m');
+    failed++;
+  }
+
+  // At 5m 1s away (301s)
+  timer.setMockTime(targetStart - 301000);
+  timer.tick();
+  if (warningCount === 0) {
+    console.log('✅ PASS: At 5m 1s away, 5m chime not yet fired');
+  } else {
+    console.log('❌ FAIL: 5m chime fired too early');
+    failed++;
+  }
+
+  // Crosses 5m threshold: 5m 0s (300,000ms)
+  timer.setMockTime(targetStart - 300000);
+  timer.tick();
+  if (warningCount === 1) {
+    console.log('✅ PASS: At 5m 0s, 5m warning chime fired');
+  } else {
+    console.log(`❌ FAIL: Expected 1 warning chime, got ${warningCount}`);
+    failed++;
+  }
+
+  // Next ticks and repeated setTarget during sync: NO duplicate 5m chimes
+  timer.setMockTime(targetStart - 290000);
+  timer.tick();
+  timer.setTarget(targetStart, targetEnd); // background sync simulation
+  timer.tick();
+  if (warningCount === 1) {
+    console.log('✅ PASS: Duplicate 5m chime prevented during ticks & calendar sync');
+  } else {
+    console.log(`❌ FAIL: Duplicate 5m chime detected: ${warningCount}`);
+    failed++;
+  }
+
+  // At 0s: Event starts
+  timer.setMockTime(targetStart);
+  timer.tick();
+  if (startCount === 1) {
+    console.log('✅ PASS: At 0s, event start chime fired');
+  } else {
+    console.log(`❌ FAIL: Expected 1 start chime, got ${startCount}`);
+    failed++;
+  }
+
+  // During in-progress: NO duplicate start chimes
+  timer.setMockTime(targetStart + 60000);
+  timer.tick();
+  timer.setTarget(targetStart, targetEnd);
+  timer.tick();
+  if (startCount === 1) {
+    console.log('✅ PASS: Duplicate start chime prevented during event');
+  } else {
+    console.log(`❌ FAIL: Duplicate start chime detected: ${startCount}`);
+    failed++;
+  }
+
+  // 10 minutes after start: auto-advance triggers
+  timer.setMockTime(targetStart + 10 * 60 * 1000);
+  timer.tick();
+  if (expireCount === 1) {
+    console.log('✅ PASS: Auto-advance expired triggered at +10m mark');
+  } else {
+    console.log(`❌ FAIL: Expected 1 expire trigger, got ${expireCount}`);
+    failed++;
+  }
+}
+
+// Test 2: Event loaded within 1 minute of start suppresses 5m chime
+{
+  let warningCount = 0;
+  let startCount = 0;
+  const baseTime = 1000000000;
+  const targetStart = baseTime + 30000; // 30s away
+  const timer = new MockTimer({
+    onWarning5m: () => warningCount++,
+    onStart: () => startCount++
+  });
+  timer.setMockTime(baseTime);
+  timer.setTarget(targetStart, targetStart + 3600000);
+
+  if (warningCount === 0) {
+    console.log('✅ PASS: 5m chime suppressed when loaded <1m to start');
+  } else {
+    console.log('❌ FAIL: 5m chime was not suppressed when loaded <1m to start');
+    failed++;
+  }
+
+  timer.setMockTime(targetStart);
+  timer.tick();
+  if (startCount === 1) {
+    console.log('✅ PASS: Start chime rings properly at 0m even if 5m was suppressed');
+  } else {
+    console.log('❌ FAIL: Start chime failed to ring');
+    failed++;
+  }
+}
+
+// Test 3: Event loaded already started suppresses both chimes
+{
+  let warningCount = 0;
+  let startCount = 0;
+  const baseTime = 1000000000;
+  const targetStart = baseTime - 60000; // started 1 min ago
+  const timer = new MockTimer({
+    onWarning5m: () => warningCount++,
+    onStart: () => startCount++
+  });
+  timer.setMockTime(baseTime);
+  timer.setTarget(targetStart, targetStart + 3600000);
+
+  if (warningCount === 0 && startCount === 0) {
+    console.log('✅ PASS: Both chimes suppressed for already started event');
+  } else {
+    console.log('❌ FAIL: Chime triggered for already started event');
+    failed++;
+  }
+}
+
 if (failed === 0) {
-  console.log('\n🎉 ALL COUNTDOWN TESTS PASSED!');
+  console.log('\n🎉 ALL TESTS (FORMATTING + CHIMES) PASSED!');
 } else {
   console.log(`\n❌ ${failed} tests failed!`);
 }

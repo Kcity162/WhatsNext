@@ -10,10 +10,14 @@ export class CountdownTimer {
     this.startedGraceMs = options.startedGraceMs !== undefined ? options.startedGraceMs : 10 * 60 * 1000; // 10 minutes
     this.onTick = options.onTick || (() => {});
     this.onExpire = options.onExpire || (() => {});
+    this.onWarning5m = options.onWarning5m || (() => {});
+    this.onStart = options.onStart || (() => {});
     this.intervalId = null;
     this.currentIntervalMs = null;
     this.mode = options.mode || 'sensible'; // 'sensible' | 'precise'
     this.expiredTriggered = false;
+    this.warning5mTriggered = false;
+    this.startTriggered = false;
   }
 
   /**
@@ -22,9 +26,44 @@ export class CountdownTimer {
    * @param {Date|string|number|null} targetEndTime
    */
   setTarget(targetStartTime, targetEndTime = null) {
-    this.targetDate = targetStartTime ? new Date(targetStartTime) : null;
-    this.endDate = targetEndTime ? new Date(targetEndTime) : null;
+    const newTargetDate = targetStartTime ? new Date(targetStartTime) : null;
+    const newEndDate = targetEndTime ? new Date(targetEndTime) : null;
+
+    const isSameTarget = (
+      (!this.targetDate && !newTargetDate) ||
+      (this.targetDate && newTargetDate && this.targetDate.getTime() === newTargetDate.getTime())
+    ) && (
+      (!this.endDate && !newEndDate) ||
+      (this.endDate && newEndDate && this.endDate.getTime() === newEndDate.getTime())
+    );
+
+    if (isSameTarget) {
+      return;
+    }
+
+    this.targetDate = newTargetDate;
+    this.endDate = newEndDate;
     this.expiredTriggered = false;
+
+    // Suppress chime if setting target already past threshold on load
+    if (this.targetDate) {
+      const initialDiffMs = this.targetDate.getTime() - Date.now();
+      if (initialDiffMs <= 0) {
+        this.warning5mTriggered = true;
+        this.startTriggered = true;
+      } else if (initialDiffMs < 60000) {
+        // Less than 1 minute to start: suppress 5m warning, start chime will trigger shortly
+        this.warning5mTriggered = true;
+        this.startTriggered = false;
+      } else {
+        this.warning5mTriggered = false;
+        this.startTriggered = false;
+      }
+    } else {
+      this.warning5mTriggered = false;
+      this.startTriggered = false;
+    }
+
     this.tick();
     this.restartInterval();
   }
@@ -241,6 +280,18 @@ export class CountdownTimer {
         this.onExpire();
       }
       return;
+    }
+
+    // 5-minute warning chime: triggers when remaining time is at or below 5 minutes (300,000ms)
+    if (diffMs <= 300000 && diffMs > 0 && !this.warning5mTriggered) {
+      this.warning5mTriggered = true;
+      this.onWarning5m();
+    }
+
+    // Meeting start chime: triggers when event starts (diffMs <= 0)
+    if (diffMs <= 0 && !this.startTriggered) {
+      this.startTriggered = true;
+      this.onStart();
     }
 
     // Adapt tick frequency dynamically as thresholds are crossed

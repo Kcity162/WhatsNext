@@ -191,6 +191,21 @@
             <small class="form-hint">How often the app checks Google Calendar for changes while the tab is open.</small>
           </div>
 
+          <div class="form-group">
+            <label class="form-label">Sound Notifications</label>
+            <div class="setting-toggle-row">
+              <label class="checkbox-label" for="sound-toggle">
+                <input type="checkbox" id="sound-toggle" class="form-checkbox" checked>
+                <span>Play audio chimes for upcoming meetings</span>
+              </label>
+            </div>
+            <small class="form-hint">Ascending 3-note chime 5 minutes before start, and a resonant bell when the meeting starts.</small>
+            <div class="chime-preview-group">
+              <button type="button" id="test-chime-5m-btn" class="btn-secondary btn-sm">🎵 Test 5m Warning</button>
+              <button type="button" id="test-chime-start-btn" class="btn-secondary btn-sm">🔔 Test Start Bell</button>
+            </div>
+          </div>
+
           <div id="signout-section" class="form-group">
             <button id="signout-btn" class="btn-danger hidden">Disconnect & Sign Out</button>
           </div>
