@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: whatsnext
+    name: whatsnext-app
     runtime: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
