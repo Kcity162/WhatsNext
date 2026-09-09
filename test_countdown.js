@@ -2,9 +2,10 @@
 const fs = $.NSFileManager.defaultManager;
 
 // Countdown logic extract
-function formatCountdown(diffMs, endDiffMs = null, mode = 'sensible') {
+function formatCountdown(diffMs, endDiffMs = null, mode = 'sensible', startedGraceMs = 10 * 60 * 1000) {
   if (diffMs <= 0) {
-    if (endDiffMs !== null && endDiffMs > 0) {
+    const startedMs = -diffMs;
+    if (endDiffMs !== null && endDiffMs > 0 && startedMs < startedGraceMs) {
       const remainingSec = Math.floor(endDiffMs / 1000);
       const mins = Math.ceil(remainingSec / 60);
       const hours = Math.floor(mins / 60);
@@ -56,6 +57,10 @@ const tests = [
   { name: 'Under 5 minutes (4m 25s)', diff: (4 * 60 + 25) * 1000, expected: '4:25' },
   { name: 'Under 1 minute (45 seconds)', diff: 45 * 1000, expected: '45s' },
   { name: 'In progress (ends in 20m)', diff: -10000, endDiff: 20 * 60 * 1000, expected: 'NOW' },
+  { name: 'In progress at 5m (< 10 mins, ends in 4h 55m)', diff: -5 * 60 * 1000, endDiff: (4 * 3600 + 55 * 60) * 1000, expected: 'NOW' },
+  { name: 'In progress at 9m 59s (< 10 mins)', diff: -599 * 1000, endDiff: 3600 * 1000, expected: 'NOW' },
+  { name: 'In progress at 10m (10-min cutoff reached)', diff: -10 * 60 * 1000, endDiff: (4 * 3600 + 50 * 60) * 1000, expected: '0m' },
+  { name: 'In progress at 15m (1pm meeting at 1:15pm, ends in 4h 45m)', diff: -15 * 60 * 1000, endDiff: (4 * 3600 + 45 * 60) * 1000, expected: '0m' },
   { name: 'Just ended', diff: -1000, endDiff: -500, expected: '0m' }
 ];
 

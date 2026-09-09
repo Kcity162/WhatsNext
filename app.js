@@ -10,6 +10,9 @@
 
 import { CountdownTimer } from './countdown.js';
 
+// Auto-advance to next meeting 10 minutes after meeting starts
+const EVENT_STARTED_GRACE_MS = 10 * 60 * 1000; // 10 minutes
+
 class WhatsNextApp {
   constructor() {
     this.clientId = this.loadClientId();
@@ -34,6 +37,7 @@ class WhatsNextApp {
 
     this.countdown = new CountdownTimer({
       mode: localStorage.getItem('whatsnext_time_mode') || 'sensible',
+      startedGraceMs: EVENT_STARTED_GRACE_MS,
       onTick: (state) => this.renderCountdown(state),
       onExpire: () => this.handleEventExpired()
     });
@@ -667,30 +671,48 @@ class WhatsNextApp {
     }
   }
 
+  getEligibleEvents() {
+    const now = Date.now();
+    return this.events.filter((evt) => {
+      const startMs = evt.start.getTime();
+      const endMs = evt.end.getTime();
+      // Filter out events that have fully ended
+      if (endMs <= now) return false;
+      // If event already started, only keep it for up to 10 minutes after start
+      if (startMs <= now) {
+        return (now - startMs) < EVENT_STARTED_GRACE_MS;
+      }
+      return true;
+    });
+  }
+
   updateActiveEvent() {
-    if (this.events.length === 0) {
+    const eligibleEvents = this.getEligibleEvents();
+
+    if (eligibleEvents.length === 0) {
       this.currentEvent = null;
       this.countdown.setTarget(null);
       this.showState('empty');
-      this.renderAgenda();
+      this.renderAgenda([]);
       return;
     }
 
-    this.currentEvent = this.events[0];
+    this.currentEvent = eligibleEvents[0];
     this.countdown.setTarget(this.currentEvent.start, this.currentEvent.end);
     this.showState('hero');
     this.renderHeroDetails();
-    this.renderAgenda();
+    this.renderAgenda(eligibleEvents);
   }
 
   handleEventExpired() {
-    setTimeout(() => {
-      if (this.isDemoMode) {
-        this.advanceDemoEvent();
-      } else {
-        this.refreshEvents(false);
-      }
-    }, 1500);
+    if (this.isDemoMode) {
+      this.advanceDemoEvent();
+    } else {
+      // Immediately advance to next eligible event
+      this.updateActiveEvent();
+      // Silently refresh calendar in background for any changes
+      this.refreshEvents(false);
+    }
   }
 
   /* ---------------- UI Rendering ---------------- */
@@ -794,11 +816,12 @@ class WhatsNextApp {
     }
   }
 
-  renderAgenda() {
+  renderAgenda(eligibleEvents = null) {
     if (!this.dom.agendaList) return;
     this.dom.agendaList.innerHTML = '';
 
-    const upcoming = this.events.slice(1, 4);
+    const list = eligibleEvents !== null ? eligibleEvents : this.getEligibleEvents();
+    const upcoming = list.slice(1, 4);
 
     if (upcoming.length === 0) {
       this.dom.agendaList.innerHTML = '<li class="agenda-empty">No further events scheduled</li>';

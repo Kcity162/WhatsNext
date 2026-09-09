@@ -7,10 +7,13 @@ export class CountdownTimer {
   constructor(options = {}) {
     this.targetDate = null;
     this.endDate = null;
+    this.startedGraceMs = options.startedGraceMs !== undefined ? options.startedGraceMs : 10 * 60 * 1000; // 10 minutes
     this.onTick = options.onTick || (() => {});
     this.onExpire = options.onExpire || (() => {});
     this.intervalId = null;
+    this.currentIntervalMs = null;
     this.mode = options.mode || 'sensible'; // 'sensible' | 'precise'
+    this.expiredTriggered = false;
   }
 
   /**
@@ -21,6 +24,7 @@ export class CountdownTimer {
   setTarget(targetStartTime, targetEndTime = null) {
     this.targetDate = targetStartTime ? new Date(targetStartTime) : null;
     this.endDate = targetEndTime ? new Date(targetEndTime) : null;
+    this.expiredTriggered = false;
     this.tick();
     this.restartInterval();
   }
@@ -47,6 +51,7 @@ export class CountdownTimer {
    */
   getOptimalInterval(diffMs) {
     if (this.mode === 'precise') return 1000;
+    if (diffMs <= 0) return 1000; // In progress: tick every 1s so 10-minute cutoff triggers precisely
     const diffSec = Math.floor(diffMs / 1000);
     if (diffSec <= 300) return 1000; // Under 5 minutes: tick every 1s
     if (diffSec <= 3600) return 5000; // Under 1 hour: tick every 5s
@@ -61,6 +66,7 @@ export class CountdownTimer {
     const now = Date.now();
     const diffMs = this.targetDate.getTime() - now;
     const intervalMs = this.getOptimalInterval(diffMs);
+    this.currentIntervalMs = intervalMs;
 
     this.intervalId = setInterval(() => {
       this.tick();
@@ -76,8 +82,9 @@ export class CountdownTimer {
   formatCountdown(diffMs, endDiffMs = null) {
     // 1. Event already started
     if (diffMs <= 0) {
-      if (endDiffMs !== null && endDiffMs > 0) {
-        // In progress
+      const startedMs = -diffMs;
+      if (endDiffMs !== null && endDiffMs > 0 && startedMs < this.startedGraceMs) {
+        // In progress (within 10-minute window after meeting start)
         const remainingSec = Math.floor(endDiffMs / 1000);
         const mins = Math.ceil(remainingSec / 60);
         const hours = Math.floor(mins / 60);
@@ -103,7 +110,7 @@ export class CountdownTimer {
       return {
         status: 'ended',
         primary: '0m',
-        secondary: 'Starting now or just ended',
+        secondary: 'Advancing to next event...',
         badge: 'Starting Now',
         urgency: 'now',
         rawSec: 0
@@ -221,13 +228,25 @@ export class CountdownTimer {
     const now = Date.now();
     const diffMs = this.targetDate.getTime() - now;
     const endDiffMs = this.endDate ? this.endDate.getTime() - now : null;
+    const startedMs = -diffMs;
 
-    if (diffMs <= 0 && (!endDiffMs || endDiffMs <= 0)) {
-      // Finished
+    const isGraceExpired = diffMs <= 0 && startedMs >= this.startedGraceMs;
+    const isEnded = diffMs <= 0 && (!endDiffMs || endDiffMs <= 0);
+
+    if (isGraceExpired || isEnded) {
       const state = this.formatCountdown(diffMs, endDiffMs);
       this.onTick(state);
-      this.onExpire();
+      if (!this.expiredTriggered) {
+        this.expiredTriggered = true;
+        this.onExpire();
+      }
       return;
+    }
+
+    // Adapt tick frequency dynamically as thresholds are crossed
+    const expectedInterval = this.getOptimalInterval(diffMs);
+    if (this.currentIntervalMs && this.currentIntervalMs !== expectedInterval) {
+      this.restartInterval();
     }
 
     const state = this.formatCountdown(diffMs, endDiffMs);
