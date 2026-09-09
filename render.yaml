@@ -1,9 +1,14 @@
 services:
   - type: web
     name: whatsnext
-    runtime: python
-    buildCommand: ""
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "python3 server.py"
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false

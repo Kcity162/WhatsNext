@@ -24,6 +24,24 @@ DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(DIRECTORY, "data")
 STORE_FILE = os.path.join(DATA_DIR, "token_store.json")
 
+def load_env():
+    """Load key-value pairs from .env if present (zero dependencies)."""
+    env_path = os.path.join(DIRECTORY, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip("'\"")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception as e:
+            print(f"[Env] Error reading .env: {e}", flush=True)
+
+load_env()
+
 def load_store():
     if not os.path.exists(DATA_DIR):
         try:
@@ -257,6 +275,8 @@ class WhatsNextHandler(http.server.SimpleHTTPRequestHandler):
                 c["wn_refresh_token"]["max-age"] = 31536000 # 1 year
                 c["wn_refresh_token"]["httponly"] = True
                 c["wn_refresh_token"]["samesite"] = "Lax"
+                if self.headers.get("X-Forwarded-Proto", "http") == "https":
+                    c["wn_refresh_token"]["secure"] = True
                 cookie_header = c["wn_refresh_token"].OutputString()
 
             self.send_response(302)
@@ -356,6 +376,8 @@ class WhatsNextHandler(http.server.SimpleHTTPRequestHandler):
             c["wn_refresh_token"] = ""
             c["wn_refresh_token"]["path"] = "/"
             c["wn_refresh_token"]["max-age"] = 0
+            if self.headers.get("X-Forwarded-Proto", "http") == "https":
+                c["wn_refresh_token"]["secure"] = True
 
             self.send_json(200, {"ok": True}, set_cookie=c["wn_refresh_token"].OutputString())
             return

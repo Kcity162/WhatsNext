@@ -7,6 +7,7 @@ __pycache__/
 
 # Local config & tokens
 config.js
+.env
 data/
 token_store.json
 *.token

@@ -929,6 +929,14 @@ class WhatsNextApp {
 
   openSettings() {
     this.dom.clientIdInput.value = this.clientId || '';
+    if (this.dom.clientSecretInput) {
+      if (this.backendConfigured) {
+        this.dom.clientSecretInput.placeholder = '•••••••••••••••• (Configured on server)';
+        this.dom.clientSecretInput.value = '';
+      } else {
+        this.dom.clientSecretInput.placeholder = 'Google OAuth Client Secret';
+      }
+    }
     if (this.dom.refreshIntervalSelect) {
       this.dom.refreshIntervalSelect.value = String(this.refreshIntervalMs);
     }
